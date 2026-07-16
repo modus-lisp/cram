@@ -93,7 +93,7 @@
     (bw-huff bw (aref *dist-code* i) (aref *dist-len* i))
     (when (plusp (aref *dist-extra* i)) (bw-put bw (- dist (aref *dist-base* i)) (aref *dist-extra* i)))))
 
-;;; ---- LZ77 + block emission --------------------------------------------------
+;;; ---- LZ77 -> tokens ---------------------------------------------------------
 
 (defconstant +window+ 32768)
 (defconstant +min-match+ 3)
@@ -102,38 +102,163 @@
 (defun hash3 (data i)
   (logand (logxor (ash (aref data i) 8) (ash (aref data (+ i 1)) 4) (aref data (+ i 2))) #xffff))
 
-(defun deflate-block (bw data start end final head prev max-chain)
-  "Emit a fixed-Huffman block for DATA[START:END].  HEAD/PREV are the persistent
-   hash-chain tables (matches may reach back to earlier positions within the 32 KB
-   window, so a streamed block can reference data from earlier flushes)."
-  (bw-put bw (if final 1 0) 1) (bw-put bw 1 2)          ; BFINAL, BTYPE=01 (fixed)
-  (let ((pos start) (wmask (1- +window+)))
+(defun lz77 (data start end head prev max-chain)
+  "Greedy LZ77 of DATA[START:END] -> a vector of tokens: a byte (0..255) for a
+   literal, or (len . dist) for a match.  HEAD/PREV persist across calls, so a
+   streamed block can reference data from an earlier flush (within 32 KB)."
+  (let ((tokens (make-array 256 :adjustable t :fill-pointer 0)) (pos start) (wmask (1- +window+)))
     (labels ((mlen (a b)
                (let ((l 0) (lim (min +max-match+ (- end b))))
-                 (loop while (and (< l lim) (= (aref data (+ a l)) (aref data (+ b l)))) do (incf l))
-                 l))
+                 (loop while (and (< l lim) (= (aref data (+ a l)) (aref data (+ b l)))) do (incf l)) l))
              (insert (i)
                (let ((h (hash3 data i)))
                  (setf (aref prev (logand i wmask)) (aref head h) (aref head h) i))))
       (loop while (< pos end) do
         (if (<= (+ pos +min-match+) end)
-            (let ((h (hash3 data pos)) (best 0) (bestpos -1) (cand -1) (chain 0))
-              (setf cand (aref head h))
+            (let ((best 0) (bp -1) (cand (aref head (hash3 data pos))) (chain 0))
               (loop while (and (>= cand 0) (<= (- pos cand) +window+) (< chain max-chain)) do
                 (let ((l (mlen cand pos)))
-                  (when (> l best) (setf best l bestpos cand))
+                  (when (> l best) (setf best l bp cand))
                   (when (>= best +max-match+) (return)))
                 (setf cand (aref prev (logand cand wmask)) chain (1+ chain)))
               (insert pos)
               (if (>= best +min-match+)
-                  (progn
-                    (emit-match bw best (- pos bestpos))
-                    (loop for k from 1 below best while (<= (+ pos k +min-match+) end)
-                          do (insert (+ pos k)))
-                    (incf pos best))
-                  (progn (emit-literal bw (aref data pos)) (incf pos))))
-            (progn (emit-literal bw (aref data pos)) (incf pos))))))
-  (bw-huff bw (aref *lit-code* 256) (aref *lit-len* 256)))    ; end-of-block
+                  (progn (vector-push-extend (cons best (- pos bp)) tokens)
+                         (loop for k from 1 below best while (<= (+ pos k +min-match+) end) do (insert (+ pos k)))
+                         (incf pos best))
+                  (progn (vector-push-extend (aref data pos) tokens) (incf pos))))
+            (progn (vector-push-extend (aref data pos) tokens) (incf pos)))))
+    tokens))
+
+;;; ---- length-limited Huffman (boundary package-merge) ------------------------
+
+(defun huffman-lengths (freq n maxbits)
+  "Optimal code lengths (each <= MAXBITS) for symbols 0..N-1 with counts FREQ.
+   Unused symbols get length 0."
+  (let ((lengths (make-array n :initial-element 0)) (used '()))
+    (dotimes (i n) (when (plusp (aref freq i)) (push i used)))
+    (setf used (sort used (lambda (a b) (< (aref freq a) (aref freq b)))))
+    (let ((m (length used)))
+      (cond
+        ((zerop m) lengths)
+        ((= m 1) (setf (aref lengths (first used)) 1) lengths)   ; a lone symbol: 1 bit
+        (t (let* ((orig (mapcar (lambda (i) (cons (aref freq i) (list i))) used))
+                  (packages orig))
+             (dotimes (level (1- maxbits))                       ; build up to MAXBITS levels
+               (let ((paired '()) (p packages))
+                 (loop while (and p (cdr p)) do
+                   (push (cons (+ (car (first p)) (car (second p)))
+                               (append (cdr (first p)) (cdr (second p)))) paired)
+                   (setf p (cddr p)))
+                 (setf packages (merge 'list (copy-list orig) (nreverse paired) #'< :key #'car))))
+             (let ((take (- (* 2 m) 2)) (i 0))                   ; first 2m-2 packages
+               (dolist (pk packages)
+                 (when (>= i take) (return))
+                 (dolist (sym (cdr pk)) (incf (aref lengths sym)))
+                 (incf i)))
+             lengths))))))
+
+;;; ---- token frequencies / sizing / emission ----------------------------------
+
+(defun count-freqs (tokens)
+  (let ((lit (make-array 286 :initial-element 0)) (dist (make-array 30 :initial-element 0)))
+    (loop for tok across tokens do
+      (if (integerp tok) (incf (aref lit tok))
+          (progn (incf (aref lit (+ 257 (aref *len-sym* (car tok)))))
+                 (incf (aref dist (dist-index (cdr tok)))))))
+    (incf (aref lit 256))                                        ; end-of-block
+    (values lit dist)))
+
+(defun token-bits (tokens lit-len dist-len)
+  (let ((bits (aref lit-len 256)))
+    (loop for tok across tokens do
+      (if (integerp tok) (incf bits (aref lit-len tok))
+          (let ((li (aref *len-sym* (car tok))) (di (dist-index (cdr tok))))
+            (incf bits (+ (aref lit-len (+ 257 li)) (aref *len-extra* li)
+                          (aref dist-len di) (aref *dist-extra* di))))))
+    bits))
+
+(defun emit-tokens (bw tokens lit-code lit-len dist-code dist-len)
+  (loop for tok across tokens do
+    (if (integerp tok) (bw-huff bw (aref lit-code tok) (aref lit-len tok))
+        (let ((li (aref *len-sym* (car tok))) (di (dist-index (cdr tok))))
+          (bw-huff bw (aref lit-code (+ 257 li)) (aref lit-len (+ 257 li)))
+          (when (plusp (aref *len-extra* li)) (bw-put bw (- (car tok) (aref *len-base* li)) (aref *len-extra* li)))
+          (bw-huff bw (aref dist-code di) (aref dist-len di))
+          (when (plusp (aref *dist-extra* di)) (bw-put bw (- (cdr tok) (aref *dist-base* di)) (aref *dist-extra* di))))))
+  (bw-huff bw (aref lit-code 256) (aref lit-len 256)))          ; end-of-block
+
+(defun rle-code-lengths (cl)
+  "Run-length encode the code-length sequence CL into (symbol . extra) tokens
+   (symbols 0-15 = a length; 16 = repeat prev 3-6; 17 = zero 3-10; 18 = zero 11-138)."
+  (let ((out '()) (i 0) (n (length cl)))
+    (loop while (< i n) do
+      (let ((v (aref cl i)) (run 1))
+        (loop while (and (< (+ i run) n) (= (aref cl (+ i run)) v)) do (incf run))
+        (cond
+          ((zerop v)
+           (loop while (>= run 11) do (let ((r (min run 138))) (push (cons 18 (- r 11)) out) (incf i r) (decf run r)))
+           (loop while (>= run 3)  do (let ((r (min run 10)))  (push (cons 17 (- r 3))  out) (incf i r) (decf run r)))
+           (dotimes (k run) (push (cons 0 0) out) (incf i)))
+          (t (push (cons v 0) out) (incf i) (decf run)          ; the length itself
+             (loop while (>= run 3) do (let ((r (min run 6))) (push (cons 16 (- r 3)) out) (incf i r) (decf run r)))
+             (dotimes (k run) (push (cons v 0) out) (incf i))))))
+    (nreverse out)))
+
+(defun emit-stored (bw data start end final)
+  (bw-put bw (if final 1 0) 1) (bw-put bw 0 2)                  ; BFINAL, BTYPE=00
+  (bw-align bw)
+  (let ((len (- end start)))
+    (vector-push-extend (logand len #xff) (bitw-out bw))
+    (vector-push-extend (logand (ash len -8) #xff) (bitw-out bw))
+    (vector-push-extend (logand (lognot len) #xff) (bitw-out bw))
+    (vector-push-extend (logand (ash (lognot len) -8) #xff) (bitw-out bw))
+    (loop for i from start below end do (vector-push-extend (aref data i) (bitw-out bw)))))
+
+(defun emit-block (bw data start end tokens final)
+  "Emit DATA[START:END] as the smallest of a stored / fixed-Huffman /
+   dynamic-Huffman block for TOKENS."
+  (multiple-value-bind (lit-freq dist-freq) (count-freqs tokens)
+    (let ((lit-lengths (huffman-lengths lit-freq 286 15))
+          (dist-lengths (huffman-lengths dist-freq 30 15)))
+      (when (every #'zerop dist-lengths) (setf (aref dist-lengths 0) 1))  ; keep a valid dist tree
+      (let* ((hlit (max 257 (1+ (or (position-if #'plusp lit-lengths :from-end t) 256))))
+             (hdist (max 1 (1+ (or (position-if #'plusp dist-lengths :from-end t) 0))))
+             (cl (concatenate 'vector (subseq lit-lengths 0 hlit) (subseq dist-lengths 0 hdist)))
+             (rle (rle-code-lengths cl))
+             (cl-freq (make-array 19 :initial-element 0)))
+        (dolist (tk rle) (incf (aref cl-freq (car tk))))
+        (let* ((cl-lengths (huffman-lengths cl-freq 19 7))
+               (hclen 4))
+          (loop for i from 18 downto 4 do
+            (when (plusp (aref cl-lengths (aref *clen-order* i))) (setf hclen (1+ i)) (return)))
+          (let* ((dyn-hdr (+ 3 5 5 4 (* 3 hclen)
+                             (loop for tk in rle sum (+ (aref cl-lengths (car tk))
+                                                        (case (car tk) (16 2) (17 3) (18 7) (t 0))))))
+                 (dyn-bits   (+ dyn-hdr (token-bits tokens lit-lengths dist-lengths)))
+                 (fixed-bits (+ 3 (token-bits tokens *lit-len* *dist-len*)))
+                 (stored-bits (* 8 (+ 5 (- end start)))))
+            (cond
+              ((and (<= stored-bits dyn-bits) (<= stored-bits fixed-bits))
+               (emit-stored bw data start end final))
+              ((<= fixed-bits dyn-bits)
+               (bw-put bw (if final 1 0) 1) (bw-put bw 1 2)     ; fixed
+               (emit-tokens bw tokens *lit-code* *lit-len* *dist-code* *dist-len*))
+              (t
+               (bw-put bw (if final 1 0) 1) (bw-put bw 2 2)     ; dynamic
+               (bw-put bw (- hlit 257) 5) (bw-put bw (- hdist 1) 5) (bw-put bw (- hclen 4) 4)
+               (dotimes (i hclen) (bw-put bw (aref cl-lengths (aref *clen-order* i)) 3))
+               (let ((cl-code (canonical-codes cl-lengths)))
+                 (dolist (tk rle)
+                   (bw-huff bw (aref cl-code (car tk)) (aref cl-lengths (car tk)))
+                   (case (car tk) (16 (bw-put bw (cdr tk) 2)) (17 (bw-put bw (cdr tk) 3)) (18 (bw-put bw (cdr tk) 7)))))
+               (emit-tokens bw tokens (canonical-codes lit-lengths) lit-lengths
+                            (canonical-codes dist-lengths) dist-lengths)))))))))
+
+(defun deflate-block (bw data start end final head prev max-chain)
+  "Emit DATA[START:END] as one DEFLATE block (best of stored/fixed/dynamic).
+   HEAD/PREV are the persistent hash tables (matches can reach earlier flushes)."
+  (emit-block bw data start end (lz77 data start end head prev max-chain) final))
 
 (defun emit-sync-marker (bw)
   "Z_SYNC_FLUSH: an empty stored block (byte-aligns; decoder flushes so far)."
