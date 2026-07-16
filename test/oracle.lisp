@@ -53,6 +53,31 @@
     (let* ((full (apply #'cat (reverse parts))) (back (chipz:decompress nil :zlib full)))
       (check (equalp back (cat c1 c2 c3)) "streaming full-stream roundtrip")))
 
+  ;; 2b. cram INFLATE round-trips (our own + an independent compressor's output)
+  (dolist (data (list (u8 #()) (s->u8 "a")
+                      (s->u8 "the quick brown fox jumps over the lazy dog. ")
+                      (u8 (make-array 3000 :initial-element 65))
+                      (patterned 20000) (random-bytes 8000)))
+    (multiple-value-bind (back consumed) (cram:zlib-decompress (cram:zlib-compress data))
+      (declare (ignore consumed))
+      (check (equalp back data) "cram deflate<->inflate roundtrip, len ~a" (length data)))
+    ;; independent source: salza2 compresses, cram inflates (salza2 mangles empty
+    ;; input into a run of zeros — its quirk, not ours — so cross-check non-empty)
+    (when (plusp (length data))
+      (let ((z (salza2:compress-data data 'salza2:zlib-compressor)))
+        (check (equalp (cram:zlib-decompress z) data) "salza2 -> cram inflate, len ~a" (length data))))
+    ;; raw deflate round-trip
+    (check (equalp (cram:deflate-decompress (cram:deflate-compress data)) data)
+           "cram raw deflate<->inflate, len ~a" (length data)))
+
+  ;; 2c. consumed-count: two zlib streams back-to-back, decode the first, find the second
+  (let* ((d1 (s->u8 "FIRST object bytes here")) (d2 (s->u8 "SECOND object, different"))
+         (buf (cat (cram:zlib-compress d1) (cram:zlib-compress d2))))
+    (multiple-value-bind (out1 consumed) (cram:zlib-decompress buf)
+      (check (equalp out1 d1) "consumed-count: first stream decodes")
+      (check (equalp (cram:zlib-decompress buf :start consumed) d2)
+             "consumed-count: second stream found at offset ~a" consumed)))
+
   ;; 3. RFB-style: one persistent inflate state, decode each sync-flushed message
   (let ((zs (cram:make-zstream)) (ds (chipz:make-dstate :zlib))
         (msgs (list (s->u8 "MESSAGE one, some pixels here ")

@@ -11,10 +11,10 @@ No FFI, no dependencies."
   :depends-on ()
   :serial t
   :components ((:module "src" :serial t
-                :components ((:file "packages") (:file "deflate")))))
+                :components ((:file "packages") (:file "deflate") (:file "inflate")))))
 
 (asdf:defsystem :cram/test
-  :description "Round-trip cram's output through chipz (an independent inflate)."
-  :depends-on ("cram" "chipz")
+  :description "Round-trip cram both ways, cross-checked against chipz + salza2."
+  :depends-on ("cram" "chipz" "salza2")
   :serial t
   :components ((:module "test" :serial t :components ((:file "oracle")))))

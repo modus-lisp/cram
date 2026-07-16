@@ -2,23 +2,26 @@
 
 > Working name — rename freely.
 
-**A from-scratch DEFLATE / zlib compressor in pure Common Lisp — with
-`Z_SYNC_FLUSH`.** Fixed-Huffman blocks plus a greedy LZ77 hash-chain matcher over
-a 32 KB window, producing standard zlib/DEFLATE (RFC 1950/1951) that any inflate
-decodes.
+**A from-scratch DEFLATE / zlib codec in pure Common Lisp — with `Z_SYNC_FLUSH`.**
+Compress *and* decompress: fixed-Huffman + greedy LZ77 (hash-chain, 32 KB window)
+on the way out; a puff-style canonical-Huffman inflater (all three block types) on
+the way in. Standard zlib/DEFLATE (RFC 1950/1951) — its output is read by any
+inflate, and it reads anyone's zlib.
 
 It exists for one feature the existing pure-CL deflate ([salza2]) doesn't expose:
-a **persistent stream you can sync-flush per message.** That's what the VNC/RFB
-`ZRLE` and `Tight` encodings require — one zlib stream per connection, flushed to
-a byte boundary after each rectangle so the client can decode it immediately,
-while the compression window carries across rectangles. No FFI, no dependencies.
+a **persistent stream you can sync-flush per message** — one zlib stream per
+connection, flushed to a byte boundary after each message so the peer can decode
+it immediately while the compression window carries over. That's what the VNC/RFB
+`ZRLE` and `Tight` encodings need. Having both halves lets a project drop chipz
+*and* salza2. No FFI, no dependencies.
 
 ```lisp
 (asdf:load-system "cram")
 
-;; one-shot
-(cram:zlib-compress  #(...bytes...))   ; => a complete zlib stream
-(cram:deflate-compress #(...bytes...)) ; => raw DEFLATE
+;; one-shot, both ways
+(cram:zlib-compress    #(...bytes...))  ; => a complete zlib stream
+(cram:zlib-decompress  z)               ; => (values bytes consumed-input-bytes)
+(cram:deflate-compress #(...))          ; / (cram:deflate-decompress ...) for raw DEFLATE
 
 ;; persistent, sync-flushed stream (the reason cram exists)
 (let ((zs (cram:make-zstream)))
@@ -26,6 +29,10 @@ while the compression window carries across rectangles. No FFI, no dependencies.
   (cram:compress zs message-2) (cram:sync-flush zs)   ; may back-reference message 1
   (cram:finish zs))                                    ; => final bytes + adler-32
 ```
+
+`zlib-decompress` / `deflate-decompress` return the byte count consumed as a
+second value — so you can find where one stream ends inside a bigger buffer (git
+objects packed back-to-back, say), and decode the next at that offset.
 
 ## Status & disclaimer
 
@@ -36,11 +43,14 @@ maximum ratio. **Research / educational; not audited.** No warranty (see
 
 ## Correctness
 
-Verified by round-tripping through **chipz** (an independent pure-CL inflate): a
-range of inputs (empty, tiny, text, run-length, patterned, random) compress and
-decompress back byte-for-byte; compressible data actually shrinks; and — the
-point — a **persistent, sync-flushed stream decodes correctly through one
-persistent inflate state, one message at a time**, exactly as a VNC client would.
+Cross-checked both directions against two independent libraries: cram's *output*
+decodes under **chipz**, and cram *inflates* the output of **salza2** — plus
+cram's own compress↔decompress round-trips. A range of inputs (empty, tiny, text,
+run-length, patterned, random) survive byte-for-byte; compressible data actually
+shrinks; the `consumed` count correctly locates a second stream packed right after
+the first; and — the point — a **persistent, sync-flushed stream decodes through
+one persistent inflate state, one message at a time**, exactly as a VNC peer
+would.
 
 ## Build & test
 
