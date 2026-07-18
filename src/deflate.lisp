@@ -205,7 +205,17 @@
              (dotimes (k run) (push (cons v 0) out) (incf i))))))
     (nreverse out)))
 
+(defun bw-append (bw data start end)
+  "Bulk-append the byte-aligned raw bytes DATA[start:end] to BW's output (one
+   REPLACE, not a per-byte push) — so a stored block is a memcpy, not a loop."
+  (let* ((o (bitw-out bw)) (p (fill-pointer o)) (need (+ p (- end start))))
+    (when (> need (array-dimension o 0)) (adjust-array o (max need (* 2 (array-dimension o 0)))))
+    (setf (fill-pointer o) need)
+    (replace o data :start1 p :start2 start :end2 end)))
+
 (defun emit-stored (bw data start end final)
+  "One stored (BTYPE=00) DEFLATE block for DATA[start:end].  END-START must be
+   <= 65535 (the stored length is 16-bit); use EMIT-STORED* for larger ranges."
   (bw-put bw (if final 1 0) 1) (bw-put bw 0 2)                  ; BFINAL, BTYPE=00
   (bw-align bw)
   (let ((len (- end start)))
@@ -213,7 +223,16 @@
     (vector-push-extend (logand (ash len -8) #xff) (bitw-out bw))
     (vector-push-extend (logand (lognot len) #xff) (bitw-out bw))
     (vector-push-extend (logand (ash (lognot len) -8) #xff) (bitw-out bw))
-    (loop for i from start below end do (vector-push-extend (aref data i) (bitw-out bw)))))
+    (bw-append bw data start end)))
+
+(defun emit-stored* (bw data start end final)
+  "DATA[start:end] as one or more stored blocks, each <= 65535 bytes; only the
+   last carries FINAL.  No LZ77 — a big/incompressible range costs a copy."
+  (if (= start end)
+      (emit-stored bw data start end final)                    ; empty (final) block
+      (loop for s from start below end by 65535
+            for e = (min end (+ s 65535))
+            do (emit-stored bw data s e (and final (= e end))))))
 
 (defun emit-block (bw data start end tokens final)
   "Emit DATA[START:END] as the smallest of a stored / fixed-Huffman /
@@ -332,6 +351,19 @@
     (%maybe-header zs)
     (deflate-block zw d (zstream-processed zs) (fill-pointer d) nil
                    (zstream-head zs) (zstream-prev zs) (zstream-max-chain zs))
+    (setf (zstream-processed zs) (fill-pointer d))
+    (emit-sync-marker zw)
+    (bw-take zw)))
+
+(defun sync-flush-stored (zs)
+  "Like SYNC-FLUSH but emits the pending data as STORED blocks — no LZ77 match
+   search, so a big/incompressible flush costs a bulk copy + adler, not a deep
+   deflate (~order-of-magnitude less CPU).  Still valid zlib: a client decodes it
+   as ordinary ZRLE.  Trades compression ratio for encode speed — use when the
+   link has bandwidth to spare (LAN) and the frame is large/incompressible."
+  (let ((zw (zstream-bw zs)) (d (zstream-data zs)))
+    (%maybe-header zs)
+    (emit-stored* zw d (zstream-processed zs) (fill-pointer d) nil)
     (setf (zstream-processed zs) (fill-pointer d))
     (emit-sync-marker zw)
     (bw-take zw)))

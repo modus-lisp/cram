@@ -13,6 +13,6 @@
    ;; compress: one-shot
    #:zlib-compress #:deflate-compress #:adler32
    ;; compress: persistent stream (the reason this exists) make -> compress* -> sync-flush* [-> finish]
-   #:make-zstream #:zstream #:compress #:sync-flush #:finish #:reset
+   #:make-zstream #:zstream #:compress #:sync-flush #:sync-flush-stored #:finish #:reset
    ;; decompress (returns (values bytes consumed-input-bytes))
    #:zlib-decompress #:deflate-decompress))
