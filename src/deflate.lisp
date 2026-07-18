@@ -306,11 +306,15 @@
 
 (defun make-zstream (&key (max-chain 128)) (%make-zstream :max-chain max-chain))
 
-(defun compress (zs bytes)
-  "Feed BYTES into the stream (buffered until the next SYNC-FLUSH / FINISH)."
-  (let ((d (zstream-data zs)) (s (fill-pointer (zstream-data zs))))
-    (loop for x across bytes do (vector-push-extend x d))
-    (multiple-value-bind (a b) (adler-step d s (fill-pointer d) (zstream-a zs) (zstream-b zs))
+(defun compress (zs bytes &key (start 0) (end (length bytes)))
+  "Feed BYTES[START,END) into the stream (buffered until the next SYNC-FLUSH /
+   FINISH).  Bulk-copied (not pushed byte by byte) so feeding a big buffer is fast."
+  (let* ((d (zstream-data zs)) (s (fill-pointer d)) (n (- end start)) (need (+ s n)))
+    (when (> need (array-dimension d 0))
+      (adjust-array d (max need (* 2 (array-dimension d 0)))))
+    (setf (fill-pointer d) need)
+    (replace d bytes :start1 s :start2 start :end2 end)
+    (multiple-value-bind (a b) (adler-step d s need (zstream-a zs) (zstream-b zs))
       (setf (zstream-a zs) a (zstream-b zs) b)))
   (values))
 
