@@ -11,13 +11,17 @@
 
 ;;; ---- bit reader (DEFLATE reads bits LSB-first) ------------------------------
 
+;;; END bounds the readable input.  It matters when a stream sits inside a bigger
+;;; buffer with unrelated bytes after it (WOFF1 packs one zlib stream per table):
+;;; without it a corrupt length runs on into the neighbour instead of erroring.
 (defstruct (bitr (:constructor %make-bitr))
   (data #() :type (simple-array (unsigned-byte 8) (*)))
-  (pos 0) (acc 0) (n 0))
+  (pos 0) (acc 0) (n 0) (end 0))
 
 (declaim (inline br-need br-bits br-bit))
 (defun br-need (br count)
   (loop while (< (bitr-n br) count) do
+    (when (>= (bitr-pos br) (bitr-end br)) (error "cram: out of input"))
     (setf (bitr-acc br) (logior (bitr-acc br) (ash (aref (bitr-data br) (bitr-pos br)) (bitr-n br))))
     (incf (bitr-pos br)) (incf (bitr-n br) 8)))
 
@@ -120,28 +124,77 @@
 (defun %finalize (out) (let ((v (make-array (fill-pointer out) :element-type '(unsigned-byte 8))))
                          (replace v out) v))
 
-(defun deflate-decompress (data &key (start 0))
-  "Inflate a raw DEFLATE stream.  Returns (values bytes consumed-input-bytes)."
-  (let ((br (%make-bitr :data (coerce data '(simple-array (unsigned-byte 8) (*))) :pos start))
-        (out (%new-out)))
+(defun %ub8v (data) (coerce data '(simple-array (unsigned-byte 8) (*))))
+
+(defun deflate-decompress (data &key (start 0) end)
+  "Inflate a raw DEFLATE stream from DATA[START..END).  Returns (values bytes
+   consumed-input-bytes), where CONSUMED is an index into DATA, not a length."
+  (let* ((v (%ub8v data))
+         (br (%make-bitr :data v :pos start :end (or end (length v))))
+         (out (%new-out)))
     (inflate-into br out)
     (br-align br)
     (values (%finalize out) (br-consumed br))))
 
-(defun zlib-decompress (data &key (start 0) (verify t))
-  "Inflate a zlib stream (RFC 1950).  Returns (values bytes consumed-input-bytes),
-   where CONSUMED includes the 2-byte header and the 4-byte adler-32."
-  (let ((v (coerce data '(simple-array (unsigned-byte 8) (*)))))
+(defun zlib-decompress (data &key (start 0) end (verify t))
+  "Inflate a zlib stream (RFC 1950) from DATA[START..END).  Returns (values bytes
+   consumed-input-bytes), where CONSUMED includes the 2-byte header and the 4-byte
+   adler-32.  VERIFY NIL skips the adler-32 check."
+  (let* ((v (%ub8v data))
+         (e (or end (length v))))
+    (when (< (- e start) 2) (error "cram: zlib stream too short"))
     (let ((cmf (aref v start)) (flg (aref v (1+ start))))
       (unless (zerop (mod (+ (* cmf 256) flg) 31)) (error "cram: bad zlib header"))
       (when (logtest flg 32) (error "cram: preset dictionary not supported")))
-    (let ((br (%make-bitr :data v :pos (+ start 2))) (out (%new-out)))
+    (let ((br (%make-bitr :data v :pos (+ start 2) :end e)) (out (%new-out)))
       (inflate-into br out)
       (br-align br)
       (let ((consumed (br-consumed br)))
         (when verify
+          (unless (<= (+ consumed 4) e) (error "cram: truncated adler-32"))
           (let ((got (adler32 out))
                 (want (logior (ash (aref v consumed) 24) (ash (aref v (+ consumed 1)) 16)
                               (ash (aref v (+ consumed 2)) 8) (aref v (+ consumed 3)))))
             (unless (= got want) (error "cram: adler-32 mismatch"))))
         (values (%finalize out) (+ consumed 4))))))
+
+(defun gzip-decompress (data &key (start 0) end (verify t))
+  "Inflate a gzip stream (RFC 1952) from DATA[START..END), including the optional
+   FEXTRA / FNAME / FCOMMENT / FHCRC header fields.  Returns (values bytes
+   consumed-input-bytes), where CONSUMED includes the 8-byte crc32+isize trailer.
+   VERIFY NIL skips that trailer's checks."
+  (let* ((v (%ub8v data))
+         (e (or end (length v)))
+         (p start))
+    (when (< (- e start) 18) (error "cram: gzip stream too short"))
+    (unless (and (= (aref v p) #x1f) (= (aref v (1+ p)) #x8b)) (error "cram: bad gzip magic"))
+    (let ((cm (aref v (+ p 2))) (flg (aref v (+ p 3))))
+      (unless (= cm 8) (error "cram: unexpected gzip method ~d" cm))
+      (incf p 10)                       ; magic(2) cm(1) flg(1) mtime(4) xfl(1) os(1)
+      (flet ((need (n) (unless (<= (+ p n) e) (error "cram: truncated gzip header")))
+             (skip-cstring ()
+               (loop until (and (< p e) (zerop (aref v p)))
+                     do (when (>= p e) (error "cram: truncated gzip header")) (incf p))
+               (incf p)))
+        (when (logbitp 2 flg)                            ; FEXTRA
+          (need 2)
+          (incf p (+ 2 (logior (aref v p) (ash (aref v (1+ p)) 8)))))
+        (when (logbitp 3 flg) (skip-cstring))            ; FNAME
+        (when (logbitp 4 flg) (skip-cstring))            ; FCOMMENT
+        (when (logbitp 1 flg) (need 2) (incf p 2))       ; FHCRC
+        (need 0)))
+    (let ((br (%make-bitr :data v :pos p :end e)) (out (%new-out)))
+      (inflate-into br out)
+      (br-align br)
+      (let ((consumed (br-consumed br)))
+        (when verify
+          (unless (<= (+ consumed 8) e) (error "cram: truncated gzip trailer"))
+          (let ((want-crc (logior (aref v consumed) (ash (aref v (+ consumed 1)) 8)
+                                  (ash (aref v (+ consumed 2)) 16) (ash (aref v (+ consumed 3)) 24)))
+                (want-len (logior (aref v (+ consumed 4)) (ash (aref v (+ consumed 5)) 8)
+                                  (ash (aref v (+ consumed 6)) 16) (ash (aref v (+ consumed 7)) 24))))
+            (unless (= (crc32 out) want-crc) (error "cram: gzip crc-32 mismatch"))
+            ;; ISIZE is the length mod 2^32 (RFC 1952 §2.3.1), so compare it that way.
+            (unless (= (mod (fill-pointer out) (expt 2 32)) want-len)
+              (error "cram: gzip length mismatch"))))
+        (values (%finalize out) (+ consumed 8))))))

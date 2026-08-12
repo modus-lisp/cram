@@ -298,6 +298,23 @@
 (defun adler32 (data &optional (start 0) (end (length data)))
   (multiple-value-bind (a b) (adler-step data start end 1 0) (logior (ash b 16) a)))
 
+;;; ---- crc-32 (RFC 1952) ------------------------------------------------------
+;;; gzip's integrity check, not zlib's.  Table built once on first use rather
+;;; than written out as a literal.
+
+(defvar *crc32-table*
+  (let ((tbl (make-array 256 :element-type '(unsigned-byte 32))))
+    (dotimes (n 256 tbl)
+      (let ((c n))
+        (dotimes (k 8) (setf c (if (logtest c 1) (logxor #xedb88320 (ash c -1)) (ash c -1))))
+        (setf (aref tbl n) c)))))
+
+(defun crc32 (data &optional (start 0) (end (length data)))
+  (let ((c #xffffffff) (tbl *crc32-table*))
+    (loop for i from start below end
+          do (setf c (logxor (aref tbl (logand (logxor c (aref data i)) #xff)) (ash c -8))))
+    (logxor c #xffffffff)))
+
 ;;; ---- one-shot ---------------------------------------------------------------
 
 (defun deflate-compress (data &key (max-chain 128))
