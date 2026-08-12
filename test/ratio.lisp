@@ -12,10 +12,12 @@
   (salza2:compress-data data 'salza2:zlib-compressor))
 
 (format t "~&~40a ~8@a ~8@a ~8@a~%" "file" "raw" "cram" "salza2")
-(let ((tc 0) (ts 0) (tr 0))
+(let* ((ws (merge-pathnames "../../" (make-pathname :name nil :type nil
+                                                    :defaults *load-truename*)))
+       (tc 0) (ts 0) (tr 0))
   (dolist (path (append
-                 (directory "/home/claude/cram/src/*.lisp")
-                 (directory "/home/claude/cairn/src/*.lisp")
+                 (directory (merge-pathnames "cram/src/*.lisp" ws))
+                 (directory (merge-pathnames "cairn/src/*.lisp" ws))
                  (list #p"/usr/share/dict/words")))
     (when (probe-file path)
       (let* ((data (file-bytes path))
