@@ -259,7 +259,10 @@
                  (stored-bits (* 8 (+ 5 (- end start)))))
             (cond
               ((and (<= stored-bits dyn-bits) (<= stored-bits fixed-bits))
-               (emit-stored bw data start end final))
+               ;; EMIT-STORED*, not EMIT-STORED: a whole one-shot block can exceed
+               ;; the 16-bit stored length, and incompressible input is exactly
+               ;; when this branch wins.  Splitting is the splitter's job.
+               (emit-stored* bw data start end final))
               ((<= fixed-bits dyn-bits)
                (bw-put bw (if final 1 0) 1) (bw-put bw 1 2)     ; fixed
                (emit-tokens bw tokens *lit-code* *lit-len* *dist-code* *dist-len*))

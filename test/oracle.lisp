@@ -78,6 +78,15 @@
       (check (equalp (cram:zlib-decompress buf :start consumed) d2)
              "consumed-count: second stream found at offset ~a" consumed)))
 
+  ;; 2d. Incompressible input larger than a stored block's 16-bit length.  The
+  ;; stored branch of EMIT-BLOCK wins exactly here, and it used to emit one
+  ;; oversized block: everything past 65535 bytes was silently lost, and no
+  ;; inflate (ours or chipz's) could read the result.
+  (dolist (n '(65535 65536 70000 200000))
+    (let* ((data (random-bytes n)) (z (cram:zlib-compress data)))
+      (check (equalp (chipz:decompress nil :zlib z) data) "incompressible ~d B: chipz agrees" n)
+      (check (equalp (cram:zlib-decompress z) data) "incompressible ~d B: cram round-trips" n)))
+
   ;; 3. RFB-style: one persistent inflate state, decode each sync-flushed message
   (let ((zs (cram:make-zstream)) (ds (chipz:make-dstate :zlib))
         (msgs (list (s->u8 "MESSAGE one, some pixels here ")
