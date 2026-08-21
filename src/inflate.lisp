@@ -16,14 +16,24 @@
 ;;; without it a corrupt length runs on into the neighbour instead of erroring.
 (defstruct (bitr (:constructor %make-bitr))
   (data #() :type (simple-array (unsigned-byte 8) (*)))
-  (pos 0) (acc 0) (n 0) (end 0))
+  (pos 0) (acc 0) (n 0)
+  ;; END bounds the readable region.  What happens PAST it depends on the format:
+  ;; running off the end of a DEFLATE stream is a corrupt stream and must signal,
+  ;; which is the default; VP8L pads its final symbol with implicit zeros and has
+  ;; to read a few bits beyond the last byte, which is SOFT — shift in zero bytes
+  ;; and set OVERRUN, so a caller that cares can ask afterwards.  Two formats, two
+  ;; correct answers, and picking one would have broken the other.
+  (end 0) (soft nil) (overrun nil))
 
 (declaim (inline br-need br-bits br-bit))
 (defun br-need (br count)
   (loop while (< (bitr-n br) count) do
-    (when (>= (bitr-pos br) (bitr-end br)) (error "cram: out of input"))
-    (setf (bitr-acc br) (logior (bitr-acc br) (ash (aref (bitr-data br) (bitr-pos br)) (bitr-n br))))
-    (incf (bitr-pos br)) (incf (bitr-n br) 8)))
+    (let* ((p (bitr-pos br))
+           (byte (cond ((< p (bitr-end br)) (aref (bitr-data br) p))
+                       ((bitr-soft br) (setf (bitr-overrun br) t) 0)
+                       (t (error "cram: out of input")))))
+      (setf (bitr-acc br) (logior (bitr-acc br) (ash byte (bitr-n br))))
+      (incf (bitr-pos br)) (incf (bitr-n br) 8))))
 
 (defun br-bits (br count)
   (if (zerop count) 0

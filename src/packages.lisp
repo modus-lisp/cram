@@ -19,4 +19,14 @@
    ;; LZW — the OTHER compression this stack meets (GIF; TIFF and PDF LZWDecode are
    ;; the same algorithm packed differently).  See src/lzw.lisp on why the variant is
    ;; an explicit argument and an unimplemented one signals.
-   #:lzw-decode))
+   #:lzw-decode
+   ;; Entropy-coding primitives (src/prefix.lisp): canonical prefix codes, LZ77
+   ;; back-references and a hash-addressed recent-value cache.  Shared by DEFLATE
+   ;; and by formats that reuse the same machinery with different framing —
+   ;; WebP lossless (VP8L) is the first outside caller.
+   #:make-bit-reader #:read-bits #:bit-reader-bytes-consumed
+   #:bit-reader-overrun-p #:bit-reader-past-end-p
+   #:make-prefix-code #:prefix-code #:prefix-code-p #:read-prefix-symbol
+   #:read-prefix-coded-int #:lz77-copy
+   #:make-recent-cache #:recent-cache #:recent-cache-p
+   #:recent-cache-put #:recent-cache-ref #:recent-cache-index))

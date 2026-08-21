@@ -15,7 +15,7 @@ image format first needed one."
   :serial t
   :components ((:module "src" :serial t
                 :components ((:file "packages") (:file "deflate") (:file "inflate")
-                             (:file "lzw")))))
+                             (:file "prefix") (:file "lzw")))))
 
 (asdf:defsystem :cram/test
   :description "Round-trip cram both ways, cross-checked against chipz + salza2."
