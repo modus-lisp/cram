@@ -15,4 +15,8 @@
    ;; compress: persistent stream (the reason this exists) make -> compress* -> sync-flush* [-> finish]
    #:make-zstream #:zstream #:compress #:sync-flush #:sync-flush-stored #:finish #:reset
    ;; decompress (returns (values bytes consumed-input-bytes))
-   #:zlib-decompress #:deflate-decompress #:gzip-decompress))
+   #:zlib-decompress #:deflate-decompress #:gzip-decompress
+   ;; LZW — the OTHER compression this stack meets (GIF; TIFF and PDF LZWDecode are
+   ;; the same algorithm packed differently).  See src/lzw.lisp on why the variant is
+   ;; an explicit argument and an unimplemented one signals.
+   #:lzw-decode))
