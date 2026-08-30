@@ -18,20 +18,6 @@ jobs:
       - name: Install SBCL
         run: sudo apt-get update -qq && sudo apt-get install -y -qq sbcl
 
-      # chipz is the REFERENCE this oracle differentially tests cram against, so the
-      # test needs it even though cram itself depends on nothing — which is why it is
-      # named here and not in cram.asd, and why no dependency scan could have found it.
-      - name: Quicklisp (chipz, the reference codec)
-        run: |
-          curl -sSLo /tmp/quicklisp.lisp https://beta.quicklisp.org/quicklisp.lisp
-          sbcl --non-interactive --load /tmp/quicklisp.lisp \
-               --eval '(quicklisp-quickstart:install :path "~/quicklisp/")' \
-               --eval '(ql-util:without-prompting (ql:add-to-init-file))'
-          sbcl --non-interactive --eval '(ql:quickload (list :chipz))'
-
-      # QUICKLISP, for the third-party libraries named in the .asd files.  On a
-      # developer machine ~/.sbclrc has loaded these before any gate runs, which is why
-      # the suite passed everywhere except on a machine with nothing.
       - name: Quicklisp dependencies
         run: |
           curl -sSLo /tmp/quicklisp.lisp https://beta.quicklisp.org/quicklisp.lisp
