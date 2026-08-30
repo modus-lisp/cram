@@ -28,4 +28,4 @@ jobs:
       - name: Gate
         env:
           CL_SOURCE_REGISTRY: '(:source-registry (:tree "${{ github.workspace }}/") (:exclude "vendor") (:exclude "deps") :inherit-configuration)'
-        run: sbcl --dynamic-space-size 3072 --non-interactive --eval '(require :asdf)' --eval '(asdf:load-system "cram")' --load test/oracle.lisp
+        run: sbcl --dynamic-space-size 3072 --non-interactive --eval '(require :asdf)' --eval '(asdf:load-system "chipz")' --eval '(asdf:load-system "cram")' --load test/oracle.lisp
