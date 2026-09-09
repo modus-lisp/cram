@@ -176,6 +176,8 @@
                          (cram:zlib-decompress buf :start 6 :end (+ 6 (floor (length z) 2)))))
            ":end turns a truncated stream into an error"))
 
+  (run-tar-tests)
+
   (format t "----------------------------------~%")
   (format t "checks: ~d   failures: ~d   => ~a~%" *checks* *fails* (if (zerop *fails*) "PASS" "FAIL"))
   (zerop *fails*))

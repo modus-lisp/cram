@@ -15,10 +15,11 @@ image format first needed one."
   :serial t
   :components ((:module "src" :serial t
                 :components ((:file "packages") (:file "deflate") (:file "inflate")
-                             (:file "prefix") (:file "lzw")))))
+                             (:file "prefix") (:file "lzw") (:file "tar")))))
 
 (asdf:defsystem :cram/test
   :description "Round-trip cram both ways, cross-checked against chipz + salza2."
-  :depends-on ("cram" "chipz" "salza2")
+  :depends-on ("cram" "chipz" "salza2" "uiop")
   :serial t
-  :components ((:module "test" :serial t :components ((:file "oracle")))))
+  :components ((:module "test" :serial t
+                :components ((:file "oracle") (:file "tar-oracle")))))

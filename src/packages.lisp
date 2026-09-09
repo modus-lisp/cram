@@ -20,6 +20,10 @@
    ;; the same algorithm packed differently).  See src/lzw.lisp on why the variant is
    ;; an explicit argument and an unimplemented one signals.
    #:lzw-decode
+   ;; tar (src/tar.lisp): the OTHER half of `.tar.gz`.  Reader only.  Entry names are untrusted
+   ;; input -- see the file header -- so the extractors refuse an escaping name by default.
+   #:tar-extract #:tar-list #:tar-do-entries #:tar-safe-name-p
+   #:tar-error #:tar-error-text #:tar-unsafe-name-error #:tar-unsafe-name
    ;; Entropy-coding primitives (src/prefix.lisp): canonical prefix codes, LZ77
    ;; back-references and a hash-addressed recent-value cache.  Shared by DEFLATE
    ;; and by formats that reuse the same machinery with different framing —
