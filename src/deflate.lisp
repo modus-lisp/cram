@@ -326,6 +326,27 @@
     (bw-align bw)
     (bw-take bw)))
 
+(defun gzip-compress (data &key (max-chain 128) (mtime 0))
+  "A complete gzip member (RFC 1952: header + DEFLATE + CRC-32 + ISIZE) for DATA.
+
+MTIME defaults to ZERO rather than the clock, and that is the useful default rather than a lazy
+one: a build that stamps the time produces a different file from identical input, and anything
+downstream that hashes the artefact -- a cache, a content-addressed store, a gateway deciding
+whether a client needs a fresh copy -- then reports a change that is only a timestamp."
+  (let* ((deflated (deflate-compress data :max-chain max-chain))
+         (crc (crc32 data))
+         (isize (logand (length data) #xffffffff)))
+    (flet ((le32 (n) (vector (logand n #xff) (logand (ash n -8) #xff)
+                             (logand (ash n -16) #xff) (logand (ash n -24) #xff))))
+      (concatenate '(simple-array (unsigned-byte 8) (*))
+                   ;; magic, method=deflate, no flags, mtime, no extra flags, OS=unknown
+                   #(#x1f #x8b #x08 #x00)
+                   (le32 mtime)
+                   #(#x00 #xff)
+                   deflated
+                   (le32 crc)
+                   (le32 isize)))))
+
 (defun zlib-compress (data &key (max-chain 128))
   "A complete zlib stream (RFC 1950: header + DEFLATE + adler-32) for DATA."
   (let ((deflated (deflate-compress data :max-chain max-chain))

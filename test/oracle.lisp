@@ -36,6 +36,18 @@
     (let* ((z (cram:zlib-compress data)) (back (chipz:decompress nil :zlib z)))
       (check (equalp back data) "one-shot roundtrip, len ~a -> ~a bytes" (length data) (length z))))
 
+  ;; 1b. gzip: the container CHIPZ reads and gunzip accepts, and a stable one
+  (dolist (data (list (u8 #()) (s->u8 "a") (patterned 20000) (random-bytes 8000)))
+    (let* ((g (cram:gzip-compress data)) (back (chipz:decompress nil :gzip g)))
+      (check (equalp back data) "gzip roundtrip, len ~a -> ~a bytes" (length data) (length g))))
+  (let ((data (patterned 5000)))
+    ;; MTIME defaults to zero, so identical input gives an identical file -- anything that hashes
+    ;; the artefact must not see a change that is only a clock.
+    (check (equalp (cram:gzip-compress data) (cram:gzip-compress data))
+           "gzip output is reproducible")
+    (check (not (equalp (cram:gzip-compress data) (cram:gzip-compress data :mtime 1)))
+           "...and MTIME still reaches the header when asked for"))
+
   ;; compression actually happens on compressible data
   (let* ((data (patterned 20000)) (z (cram:zlib-compress data)))
     (check (< (length z) (floor (length data) 4)) "patterned 20000 -> ~a bytes (compressed)" (length z)))
