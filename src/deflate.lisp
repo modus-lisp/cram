@@ -384,6 +384,30 @@ whether a client needs a fresh copy -- then reports a change that is only a time
     (vector-push-extend #x01 (bitw-out (zstream-bw zs)))
     (setf (zstream-header zs) t)))
 
+;;; THE STREAM KEEPS A WINDOW, NOT A HISTORY.  A match reaches back at most
+;;; +WINDOW+ bytes, so once the flushed data runs past a few windows the buffer
+;;; slides down by a multiple of +WINDOW+ -- a multiple so that PREV, indexed by
+;;; position mod +WINDOW+, keeps its indexing -- and HEAD/PREV's positions move
+;;; with it (those that fall off the front become -1, "none").  Without this a
+;;; long-lived stream (one RFB client's ZRLE session) kept every byte it was
+;;; ever fed: on a Pi Zero's 50 MB semispace a desk session ran out of heap in
+;;; about three minutes.
+(defconstant +zstream-slide-at+ (* 4 +window+))
+
+(defun %zstream-slide (zs)
+  (let ((p (zstream-processed zs)))
+    (when (>= p +zstream-slide-at+)
+      (let* ((d (zstream-data zs))
+             (off (* +window+ (floor (- p +window+) +window+)))
+             (head (zstream-head zs)) (prev (zstream-prev zs)))
+        (replace d d :start2 off :end2 (fill-pointer d))
+        (setf (fill-pointer d) (- (fill-pointer d) off)
+              (zstream-processed zs) (- p off))
+        (dotimes (i (length head))
+          (let ((v (aref head i))) (setf (aref head i) (if (>= v off) (- v off) -1))))
+        (dotimes (i (length prev))
+          (let ((v (aref prev i))) (setf (aref prev i) (if (>= v off) (- v off) -1))))))))
+
 (defun sync-flush (zs)
   "Compress everything fed since the last flush as a (non-final) block, then emit
    a Z_SYNC_FLUSH marker.  Returns the bytes produced (prefix them with a length
@@ -394,6 +418,7 @@ whether a client needs a fresh copy -- then reports a change that is only a time
                    (zstream-head zs) (zstream-prev zs) (zstream-max-chain zs))
     (setf (zstream-processed zs) (fill-pointer d))
     (emit-sync-marker zw)
+    (%zstream-slide zs)
     (bw-take zw)))
 
 (defun sync-flush-stored (zs)
@@ -407,6 +432,7 @@ whether a client needs a fresh copy -- then reports a change that is only a time
     (emit-stored* zw d (zstream-processed zs) (fill-pointer d) nil)
     (setf (zstream-processed zs) (fill-pointer d))
     (emit-sync-marker zw)
+    (%zstream-slide zs)
     (bw-take zw)))
 
 (defun finish (zs)

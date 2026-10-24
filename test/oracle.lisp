@@ -114,6 +114,27 @@
           (unless (equalp (subseq out 0 produced) m) (setf all-ok nil)))))
     (check all-ok "RFB-style incremental: each sync-flush decodes to its message"))
 
+  ;; 3b. A LONG session: the stream must keep a window, not a history.  400 flushes
+  ;; of ~8 KB (repetitive, so matches reach back across the slides), each decoded
+  ;; by one persistent chipz state, and the input buffer must stay bounded -- it
+  ;; used to keep all 3 MB, which ran a Pi Zero's desk session out of heap.
+  (let ((zs (cram:make-zstream :max-chain 16)) (ds (chipz:make-dstate :zlib))
+        (all-ok t) (maxdim 0) (state 12345))
+    (dotimes (k 400)
+      (let ((m (make-array (+ 6000 (mod (* k 37) 4000)) :element-type '(unsigned-byte 8))))
+        (dotimes (i (length m))
+          (setf state (mod (+ (* state 1103515245) 12345) 2147483648))
+          (setf (aref m i) (if (< (mod state 100) 85) (mod (+ i k) 61) (ldb (byte 8 16) state))))
+        (cram:compress zs m)
+        (let* ((flush (cram:sync-flush zs))
+               (out (make-array 65536 :element-type '(unsigned-byte 8))))
+          (multiple-value-bind (consumed produced) (chipz:decompress out ds flush)
+            (declare (ignore consumed))
+            (unless (equalp (subseq out 0 produced) m) (setf all-ok nil))))
+        (setf maxdim (max maxdim (array-dimension (cram::zstream-data zs) 0)))))
+    (check all-ok "long session: 400 sync-flushes (~3 MB) each decode to their message")
+    (check (<= maxdim (* 8 32768)) "long session: the input buffer stays bounded (max ~d B)" maxdim))
+
   ;; 4. crc-32 (RFC 1952), against the standard check value
   (check (= (cram:crc32 (s->u8 "123456789")) #xcbf43926) "crc-32 check value")
   (check (= (cram:crc32 (u8 #())) 0) "crc-32 of empty input")
