@@ -16,6 +16,8 @@
    #:make-zstream #:zstream #:compress #:sync-flush #:sync-flush-stored #:finish #:reset
    ;; decompress (returns (values bytes consumed-input-bytes))
    #:zlib-decompress #:deflate-decompress #:gzip-decompress
+   ;; decompress a stream through READ and SINK functions, never holding it whole
+   #:zlib-inflate-stream #:zlib-inflate-to
    ;; LZW — the OTHER compression this stack meets (GIF; TIFF and PDF LZWDecode are
    ;; the same algorithm packed differently).  See src/lzw.lisp on why the variant is
    ;; an explicit argument and an unimplemented one signals.

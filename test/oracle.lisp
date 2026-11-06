@@ -198,6 +198,7 @@
            ":end turns a truncated stream into an error"))
 
   (run-tar-tests)
+  (run-inflate-stream-tests)
 
   (format t "----------------------------------~%")
   (format t "checks: ~d   failures: ~d   => ~a~%" *checks* *fails* (if (zerop *fails*) "PASS" "FAIL"))

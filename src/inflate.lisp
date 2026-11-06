@@ -23,13 +23,19 @@
   ;; to read a few bits beyond the last byte, which is SOFT — shift in zero bytes
   ;; and set OVERRUN, so a caller that cares can ask afterwards.  Two formats, two
   ;; correct answers, and picking one would have broken the other.
-  (end 0) (soft nil) (overrun nil))
+  (end 0) (soft nil) (overrun nil)
+  ;; REFILL, when set, is called with the reader once DATA is used up; it puts the next
+  ;; input in DATA / POS / END and returns true, or NIL when there is no more.  That is
+  ;; how INFLATE-STREAM reads a stream it never holds whole.
+  (refill nil))
 
 (declaim (inline br-need br-bits br-bit))
 (defun br-need (br count)
   (loop while (< (bitr-n br) count) do
     (let* ((p (bitr-pos br))
            (byte (cond ((< p (bitr-end br)) (aref (bitr-data br) p))
+                       ((and (bitr-refill br) (funcall (bitr-refill br) br))
+                        (aref (bitr-data br) (bitr-pos br)))
                        ((bitr-soft br) (setf (bitr-overrun br) t) 0)
                        (t (error "cram: out of input")))))
       (setf (bitr-acc br) (logior (bitr-acc br) (ash byte (bitr-n br))))

@@ -14,7 +14,7 @@ image format first needed one."
   :depends-on ()
   :serial t
   :components ((:module "src" :serial t
-                :components ((:file "packages") (:file "deflate") (:file "inflate")
+                :components ((:file "packages") (:file "deflate") (:file "inflate") (:file "inflate-stream")
                              (:file "prefix") (:file "lzw") (:file "tar")))))
 
 (asdf:defsystem :cram/test
@@ -22,4 +22,4 @@ image format first needed one."
   :depends-on ("cram" "chipz" "salza2" "uiop")
   :serial t
   :components ((:module "test" :serial t
-                :components ((:file "oracle") (:file "tar-oracle")))))
+                :components ((:file "oracle") (:file "tar-oracle") (:file "inflate-stream")))))
