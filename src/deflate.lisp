@@ -318,8 +318,11 @@
 
 ;;; ---- crc-32 (RFC 1952) ------------------------------------------------------
 ;;; gzip's integrity check, not zlib's.  Table built once on first use rather
-;;; than written out as a literal.
+;;; than written out as a literal.  One typed table lookup per byte: slicing-by-8
+;;; is 4x faster on SBCL and 7x SLOWER on Modus, so this is the shape that wins
+;;; on both (measured 293 / 224 MB/s).
 
+(declaim (type (simple-array (unsigned-byte 32) (256)) *crc32-table*))
 (defvar *crc32-table*
   (let ((tbl (make-array 256 :element-type '(unsigned-byte 32))))
     (dotimes (n 256 tbl)
@@ -327,11 +330,28 @@
         (dotimes (k 8) (setf c (if (logtest c 1) (logxor #xedb88320 (ash c -1)) (ash c -1))))
         (setf (aref tbl n) c)))))
 
-(defun crc32 (data &optional (start 0) (end (length data)))
-  (let ((c #xffffffff) (tbl *crc32-table*))
-    (loop for i from start below end
+(defun %crc32-octets (c data start end)
+  (declare (type (simple-array (unsigned-byte 8) (*)) data)
+           (type fixnum start end) (type (unsigned-byte 32) c)
+           (optimize (speed 3) (safety 0)))
+  (let ((tbl *crc32-table*))
+    (loop for i of-type fixnum from start below end
           do (setf c (logxor (aref tbl (logand (logxor c (aref data i)) #xff)) (ash c -8))))
-    (logxor c #xffffffff)))
+    c))
+
+(defun crc32-update (c data &optional (start 0) (end (length data)))
+  "Advance the RAW (un-inverted) CRC-32 register C over DATA[START,END).  Start
+   from #xFFFFFFFF and LOGXOR the result with #xFFFFFFFF to finish; this is how a
+   caller checksums a stream it sees in pieces."
+  (if (typep data '(simple-array (unsigned-byte 8) (*)))
+      (%crc32-octets c data start end)
+      (let ((tbl *crc32-table*))
+        (loop for i from start below end
+              do (setf c (logxor (aref tbl (logand (logxor c (aref data i)) #xff)) (ash c -8))))
+        c)))
+
+(defun crc32 (data &optional (start 0) (end (length data)))
+  (logxor (crc32-update #xffffffff data start end) #xffffffff))
 
 ;;; ---- one-shot ---------------------------------------------------------------
 
