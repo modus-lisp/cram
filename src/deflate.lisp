@@ -291,9 +291,27 @@
 ;;; ---- adler-32 (RFC 1950) ----------------------------------------------------
 
 (defun adler-step (data start end a b)
-  (loop for i from start below end do
-    (setf a (mod (+ a (aref data i)) 65521) b (mod (+ b a) 65521)))
-  (values a b))
+  "Adler-32 sums A and B advanced over DATA[START,END).  The two MODs are taken once
+   per 5552 bytes, not per byte -- zlib's NMAX, the most bytes after which B still
+   fits in 32 bits -- and an octet vector takes a declared loop.  Per byte MODs
+   were most of a ZRLE desk's compression time on modus."
+  (let ((i start))
+    (if (typep data '(simple-array (unsigned-byte 8) (*)))
+        (locally (declare (type (simple-array (unsigned-byte 8) (*)) data)
+                          (type (unsigned-byte 32) a b) (fixnum i end)
+                          (optimize (speed 3) (safety 0)))
+          (loop while (< i end) do
+            (let ((lim (min end (+ i 5552))))
+              (declare (fixnum lim))
+              (loop while (< i lim) do
+                (setf a (+ a (aref data i)) b (+ b a) i (1+ i)))
+              (setf a (mod a 65521) b (mod b 65521)))))
+        (loop while (< i end) do
+          (let ((lim (min end (+ i 5552))))
+            (loop while (< i lim) do
+              (setf a (+ a (aref data i)) b (+ b a) i (1+ i)))
+            (setf a (mod a 65521) b (mod b 65521)))))
+    (values a b)))
 
 (defun adler32 (data &optional (start 0) (end (length data)))
   (multiple-value-bind (a b) (adler-step data start end 1 0) (logior (ash b 16) a)))
