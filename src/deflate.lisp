@@ -317,10 +317,10 @@
   (multiple-value-bind (a b) (adler-step data start end 1 0) (logior (ash b 16) a)))
 
 ;;; ---- crc-32 (RFC 1952) ------------------------------------------------------
-;;; gzip's integrity check, not zlib's.  Table built once on first use rather
-;;; than written out as a literal.  One typed table lookup per byte: slicing-by-8
-;;; is 4x faster on SBCL and 7x SLOWER on Modus, so this is the shape that wins
-;;; on both (measured 293 / 224 MB/s).
+;;; gzip's integrity check, not zlib's.  A simple octet vector goes through
+;;; slicing-by-8 (from beacon: eight bytes per step through eight derived tables),
+;;; 1311 MB/s on SBCL and 384 on Modus, against 338 / 244 for one table lookup per
+;;; byte.  (Beacon's own copy measures 33 on Modus; the shape is not what is slow.)
 
 (declaim (type (simple-array (unsigned-byte 32) (256)) *crc32-table*))
 (defvar *crc32-table*
@@ -330,13 +330,40 @@
         (dotimes (k 8) (setf c (if (logtest c 1) (logxor #xedb88320 (ash c -1)) (ash c -1))))
         (setf (aref tbl n) c)))))
 
+;;; table K (at 256*K) advances a byte that sits K bytes further from the end
+(declaim (type (simple-array (unsigned-byte 32) (2048)) *crc32-tables*))
+(defvar *crc32-tables*
+  (let ((tab (make-array 2048 :element-type '(unsigned-byte 32))))
+    (replace tab *crc32-table*)
+    (loop for k from 1 below 8 do
+      (dotimes (n 256)
+        (let ((prev (aref tab (+ (* 256 (1- k)) n))))
+          (setf (aref tab (+ (* 256 k) n))
+                (logxor (ash prev -8) (aref *crc32-table* (logand prev #xff)))))))
+    tab))
+
 (defun %crc32-octets (c data start end)
   (declare (type (simple-array (unsigned-byte 8) (*)) data)
            (type fixnum start end) (type (unsigned-byte 32) c)
            (optimize (speed 3) (safety 0)))
-  (let ((tbl *crc32-table*))
-    (loop for i of-type fixnum from start below end
-          do (setf c (logxor (aref tbl (logand (logxor c (aref data i)) #xff)) (ash c -8))))
+  (let ((tab *crc32-tables*) (i start))
+    (declare (type fixnum i))
+    (loop while (<= (+ i 8) end) do
+      (let ((x (logxor c (logior (aref data i) (ash (aref data (+ i 1)) 8)
+                                 (ash (aref data (+ i 2)) 16) (ash (aref data (+ i 3)) 24)))))
+        (declare (type (unsigned-byte 32) x))
+        (setf c (logxor (aref tab (+ 1792 (logand x #xff)))
+                        (aref tab (+ 1536 (logand (ash x -8) #xff)))
+                        (aref tab (+ 1280 (logand (ash x -16) #xff)))
+                        (aref tab (+ 1024 (ash x -24)))
+                        (aref tab (+ 768 (aref data (+ i 4))))
+                        (aref tab (+ 512 (aref data (+ i 5))))
+                        (aref tab (+ 256 (aref data (+ i 6))))
+                        (aref tab (aref data (+ i 7)))))
+        (incf i 8)))
+    (loop while (< i end)
+          do (setf c (logxor (aref tab (logand (logxor c (aref data i)) #xff)) (ash c -8)))
+             (incf i))
     c))
 
 (defun crc32-update (c data &optional (start 0) (end (length data)))
