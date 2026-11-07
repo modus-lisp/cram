@@ -138,6 +138,15 @@
   ;; 4. crc-32 (RFC 1952), against the standard check value
   (check (= (cram:crc32 (s->u8 "123456789")) #xcbf43926) "crc-32 check value")
   (check (= (cram:crc32 (u8 #())) 0) "crc-32 of empty input")
+  (check (= (cram:crc32c (s->u8 "123456789")) #xe3069283) "crc-32c check value")
+  (check (= (cram:crc32c (make-array 32 :element-type '(unsigned-byte 8) :initial-element 0)) #x8a9136aa)
+         "crc-32c of 32 zero octets (RFC 3720 B.4)")
+  (check (= (cram:crc32c (coerce (s->u8 "123456789") 'simple-vector)) #xe3069283) "crc-32c of a general vector")
+  (let* ((v (let ((a (make-array 10007 :element-type '(unsigned-byte 8))))
+              (dotimes (i 10007 a) (setf (aref a i) (mod (* i 7) 251)))))
+         (c #xffffffff) (i 0))
+    (dolist (n '(1 7 8 9 15 16 17 1000 3)) (setf c (cram:crc32-update c v i (+ i n))) (incf i n))
+    (check (= (logxor (cram:crc32-update c v i) #xffffffff) (cram:crc32 v)) "crc-32 fed in pieces"))
 
   ;; 5. gzip: salza2 produces the stream, cram must decode it.  An independent
   ;; producer is the point — round-tripping our own framing would prove nothing.

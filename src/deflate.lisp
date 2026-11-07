@@ -342,11 +342,12 @@
                 (logxor (ash prev -8) (aref *crc32-table* (logand prev #xff)))))))
     tab))
 
-(defun %crc32-octets (c data start end)
+(defun %crc32-octets (c data start end tab)
   (declare (type (simple-array (unsigned-byte 8) (*)) data)
+           (type (simple-array (unsigned-byte 32) (2048)) tab)
            (type fixnum start end) (type (unsigned-byte 32) c)
            (optimize (speed 3) (safety 0)))
-  (let ((tab *crc32-tables*) (i start))
+  (let ((i start))
     (declare (type fixnum i))
     (loop while (<= (+ i 8) end) do
       (let ((x (logxor c (logior (aref data i) (ash (aref data (+ i 1)) 8)
@@ -366,16 +367,40 @@
              (incf i))
     c))
 
+(defun %crc-update (c data start end tab)
+  (if (typep data '(simple-array (unsigned-byte 8) (*)))
+      (%crc32-octets c data start end tab)
+      (progn
+        (loop for i from start below end   ; TAB's first 256 entries are the byte table
+              do (setf c (logxor (aref tab (logand (logxor c (aref data i)) #xff)) (ash c -8))))
+        c)))
+
 (defun crc32-update (c data &optional (start 0) (end (length data)))
   "Advance the RAW (un-inverted) CRC-32 register C over DATA[START,END).  Start
    from #xFFFFFFFF and LOGXOR the result with #xFFFFFFFF to finish; this is how a
    caller checksums a stream it sees in pieces."
-  (if (typep data '(simple-array (unsigned-byte 8) (*)))
-      (%crc32-octets c data start end)
-      (let ((tbl *crc32-table*))
-        (loop for i from start below end
-              do (setf c (logxor (aref tbl (logand (logxor c (aref data i)) #xff)) (ash c -8))))
-        c)))
+  (%crc-update c data start end *crc32-tables*))
+
+;;; CRC-32C (Castagnoli, reflected polynomial #x82F63B78): SCTP's and iSCSI's checksum,
+;;; the same slicing-by-8 shape over its own tables.
+(defun %crc-tables (poly)
+  (let ((tab (make-array 2048 :element-type '(unsigned-byte 32))))
+    (dotimes (n 256)
+      (let ((c n))
+        (dotimes (k 8) (setf c (if (logtest c 1) (logxor poly (ash c -1)) (ash c -1))))
+        (setf (aref tab n) c)))
+    (loop for k from 1 below 8 do
+      (dotimes (n 256)
+        (let ((prev (aref tab (+ (* 256 (1- k)) n))))
+          (setf (aref tab (+ (* 256 k) n)) (logxor (ash prev -8) (aref tab (logand prev #xff)))))))
+    tab))
+
+(declaim (type (simple-array (unsigned-byte 32) (2048)) *crc32c-tables*))
+(defvar *crc32c-tables* (%crc-tables #x82f63b78))
+
+(defun crc32c (data &optional (start 0) (end (length data)))
+  "CRC-32C (Castagnoli) of DATA[START, END)."
+  (logxor (%crc-update #xffffffff data start end *crc32c-tables*) #xffffffff))
 
 (defun crc32 (data &optional (start 0) (end (length data)))
   (logxor (crc32-update #xffffffff data start end) #xffffffff))
