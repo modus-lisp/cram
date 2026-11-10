@@ -295,6 +295,11 @@
    per 5552 bytes, not per byte -- zlib's NMAX, the most bytes after which B still
    fits in 32 bits -- and an octet vector takes a declared loop.  Per byte MODs
    were most of a ZRLE desk's compression time on modus."
+  ;; modus: the runtime's own loop (one native instruction on x86-64)
+  #+modus
+  (when (and (typep data '(simple-array (unsigned-byte 8) (*)))
+             (fboundp 'modus.runtime::%adler32-update))
+    (return-from adler-step (modus.runtime::%adler32-update data start end a b)))
   (let ((i start))
     (if (typep data '(simple-array (unsigned-byte 8) (*)))
         (locally (declare (type (simple-array (unsigned-byte 8) (*)) data)
@@ -495,6 +500,12 @@ whether a client needs a fresh copy -- then reports a change that is only a time
         (replace d d :start2 off :end2 (fill-pointer d))
         (setf (fill-pointer d) (- (fill-pointer d) off)
               (zstream-processed zs) (- p off))
+        ;; modus: the runtime's own loop (one native instruction on x86-64)
+        #+modus
+        (when (fboundp 'modus.runtime::%fixnum-vector-rebase)
+          (modus.runtime::%fixnum-vector-rebase head off)
+          (modus.runtime::%fixnum-vector-rebase prev off)
+          (return-from %zstream-slide nil))
         (dotimes (i (length head))
           (let ((v (aref head i))) (setf (aref head i) (if (>= v off) (- v off) -1))))
         (dotimes (i (length prev))
