@@ -464,7 +464,9 @@ whether a client needs a fresh copy -- then reports a change that is only a time
       (adjust-array d (max need (* 2 (array-dimension d 0)))))
     (setf (fill-pointer d) need)
     (replace d bytes :start1 s :start2 start :end2 end)
-    (multiple-value-bind (a b) (adler-step d s need (zstream-a zs) (zstream-b zs))
+    ;; the checksum runs over the caller's BYTES, not over D: D is an adjustable array, which
+    ;; ADLER-STEP's typed loop does not take, and BYTES is the same bytes in order.
+    (multiple-value-bind (a b) (adler-step bytes start end (zstream-a zs) (zstream-b zs))
       (setf (zstream-a zs) a (zstream-b zs) b)))
   (values))
 
